@@ -4,13 +4,12 @@ echo "🚀 Starting Local Network Chat (Desktop Version)"
 echo ""
 
 # Build check
-if [ ! -f "./target/dx/local-net-chat/release/linux/app/local-net-chat" ]; then
-    echo "❌ Desktop app not found. Building first..."
-    dx build --platform desktop --release
-    if [ $? -ne 0 ]; then
-        echo "❌ Build failed. Exiting..."
-        exit 1
-    fi
+dx build --platform desktop --release
+if [ $? -ne 0 ]; then
+    echo "❌ Build failed. Exiting..."
+    exit 1
+else
+    echo "✅ Build successful."
 fi
 
 # Check if we're in a snap environment

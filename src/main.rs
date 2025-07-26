@@ -46,6 +46,7 @@ fn main() {
 
 #[component]
 fn App() -> Element {
+    println!("🎨 UI: App component rendering...");
     rsx! {
         head {
             meta {

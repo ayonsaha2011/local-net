@@ -135,7 +135,37 @@ pub fn get_network_interface() -> &'static NetworkInterface {
 
 // Public API functions for UI  
 pub fn discover_peers() -> Vec<database::Peer> {
-    get_network_interface().get_discovered_peers()
+    println!("🔍 UI: discover_peers() called");
+    
+    // Use the new mDNS network manager instead of the old interface
+    #[cfg(feature = "desktop")]
+    {
+        // Try to get peers from the mDNS network manager
+        if let Some(rt) = tokio::runtime::Handle::try_current().ok() {
+            let peers = rt.block_on(async {
+                crate::network::get_discovered_peers().await
+            });
+            println!("🔍 UI: Got {} peers from mDNS network manager", peers.len());
+            return peers;
+        } else {
+            // Fallback to spawning a new runtime
+            println!("🔍 UI: No tokio runtime found, creating new one");
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let peers = rt.block_on(async {
+                crate::network::get_discovered_peers().await
+            });
+            println!("🔍 UI: Got {} peers from mDNS network manager (new runtime)", peers.len());
+            return peers;
+        }
+    }
+    
+    #[cfg(not(feature = "desktop"))]
+    {
+        // For web, use the old interface simulation
+        let peers = get_network_interface().get_discovered_peers();
+        println!("🔍 UI: Got {} peers from web simulation", peers.len());
+        peers
+    }
 }
 
 pub fn send_chat_message(receiver_id: &str, content: &str) -> Result<(), String> {

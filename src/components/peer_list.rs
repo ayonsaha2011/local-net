@@ -3,28 +3,38 @@ use crate::{Route, database};
 
 #[component]
 pub fn PeerList() -> Element {
+    println!("🎨 UI: PeerList component rendering...");
+    
     let mut show_dropdown = use_signal(|| false);
     let mut peers = use_signal(Vec::new);
     let mut search_query = use_signal(String::new);
 
     // Load peers from database and network discovery
     use_effect(move || {
+        println!("🔄 UI: PeerList use_effect triggered (initial load)");
         let mut all_peers = Vec::new();
         
         // Load from database first
         #[cfg(feature = "desktop")]
         if let Ok(db_peers) = database::get_peers() {
+            println!("📊 UI: Loaded {} peers from database", db_peers.len());
             all_peers.extend(db_peers);
         }
         
         // Add discovered peers from network
+        println!("🔍 UI: Calling discover_peers() from PeerList...");
         let discovered_peers = crate::network_interface::discover_peers();
+        println!("🔍 UI: discover_peers() returned {} peers", discovered_peers.len());
         for peer in discovered_peers {
             if !all_peers.iter().any(|p: &database::Peer| p.id == peer.id) {
+                println!("🆕 UI: Adding discovered peer: {} at {}", peer.name, peer.ip_address);
                 all_peers.push(peer);
+            } else {
+                println!("⚠️ UI: Peer {} already exists, skipping", peer.name);
             }
         }
         
+        println!("📋 UI: Final peer list has {} peers", all_peers.len());
         peers.set(all_peers);
     });
     
@@ -42,22 +52,28 @@ pub fn PeerList() -> Element {
                     gloo_timers::future::TimeoutFuture::new(5000).await;
                 }
                 
+                println!("🔄 UI: PeerList auto-refresh triggered");
                 let mut all_peers = Vec::new();
                 
                 // Load from database
                 #[cfg(feature = "desktop")]
                 if let Ok(db_peers) = database::get_peers() {
+                    println!("📊 UI: Auto-refresh loaded {} peers from database", db_peers.len());
                     all_peers.extend(db_peers);
                 }
                 
                 // Add discovered peers
+                println!("🔍 UI: Auto-refresh calling discover_peers()...");
                 let discovered_peers = crate::network_interface::discover_peers();
+                println!("🔍 UI: Auto-refresh got {} discovered peers", discovered_peers.len());
                 for peer in discovered_peers {
                     if !all_peers.iter().any(|p: &database::Peer| p.id == peer.id) {
+                        println!("🆕 UI: Auto-refresh adding peer: {} at {}", peer.name, peer.ip_address);
                         all_peers.push(peer);
                     }
                 }
                 
+                println!("📋 UI: Auto-refresh setting {} total peers", all_peers.len());
                 peers.set(all_peers);
             }
         });

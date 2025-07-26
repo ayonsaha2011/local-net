@@ -496,7 +496,12 @@ impl NetworkManager {
     }
     
     pub async fn get_discovered_peers(&self) -> Vec<database::Peer> {
-        self.peers.lock().await.values().cloned().collect()
+        let peers = self.peers.lock().await.values().cloned().collect::<Vec<_>>();
+        println!("🔍 NetworkManager: Returning {} discovered peers", peers.len());
+        for peer in &peers {
+            println!("   - {} ({}) at {}", peer.name, peer.id, peer.ip_address);
+        }
+        peers
     }
     
     pub async fn send_file_transfer_request(&self, receiver_id: &str, filename: &str, file_size: u64) -> Result<(), String> {
