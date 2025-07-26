@@ -23,11 +23,13 @@ rusqlite = { version = "0.31.0", features = ["bundled"], optional = true }
 tokio-tungstenite = { version = "0.23.1", optional = true }
 futures-util = { version = "0.3.30", optional = true }
 gloo-timers = { version = "0.3.0", features = ["futures"], optional = true }
+mdns-sd = { version = "0.10", optional = true }
+local-ip-address = { version = "0.6", optional = true }
 
 [features]
 default = ["desktop"]
 web = ["dioxus/web", "gloo-timers"]
-desktop = ["dioxus/desktop", "tokio", "rusqlite", "tokio-tungstenite", "futures-util"]
+desktop = ["dioxus/desktop", "tokio", "rusqlite", "tokio-tungstenite", "futures-util", "mdns-sd", "local-ip-address"]
 mobile = ["dioxus/mobile", "gloo-timers"]
 
 [profile.dev]
