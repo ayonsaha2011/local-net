@@ -140,23 +140,21 @@ pub fn discover_peers() -> Vec<database::Peer> {
     // Use the new mDNS network manager instead of the old interface
     #[cfg(feature = "desktop")]
     {
-        // Try to get peers from the mDNS network manager
-        if let Some(rt) = tokio::runtime::Handle::try_current().ok() {
-            let peers = rt.block_on(async {
-                crate::network::get_discovered_peers().await
-            });
-            println!("🔍 UI: Got {} peers from mDNS network manager", peers.len());
-            return peers;
-        } else {
-            // Fallback to spawning a new runtime
-            println!("🔍 UI: No tokio runtime found, creating new one");
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let peers = rt.block_on(async {
-                crate::network::get_discovered_peers().await
-            });
-            println!("🔍 UI: Got {} peers from mDNS network manager (new runtime)", peers.len());
-            return peers;
-        }
+        // Since we're already in a runtime, we need to use a different approach
+        // We'll cache the peers in a static variable that gets updated by the network manager
+        use std::sync::{Arc, Mutex};
+        use std::collections::HashMap;
+        
+        // Static cache for discovered peers
+        static PEER_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<String, crate::database::Peer>>>> = std::sync::OnceLock::new();
+        
+        let cache = PEER_CACHE.get_or_init(|| {
+            Arc::new(Mutex::new(HashMap::new()))
+        });
+        
+        let peers = cache.lock().unwrap().values().cloned().collect::<Vec<_>>();
+        println!("🔍 UI: Got {} peers from peer cache", peers.len());
+        peers
     }
     
     #[cfg(not(feature = "desktop"))]
@@ -166,6 +164,35 @@ pub fn discover_peers() -> Vec<database::Peer> {
         println!("🔍 UI: Got {} peers from web simulation", peers.len());
         peers
     }
+}
+
+// Functions to manage the peer cache (called by the network manager)
+#[cfg(feature = "desktop")]
+pub fn update_peer_cache(peer: crate::database::Peer) {
+    use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
+    
+    static PEER_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<String, crate::database::Peer>>>> = std::sync::OnceLock::new();
+    
+    let cache = PEER_CACHE.get_or_init(|| {
+        Arc::new(Mutex::new(HashMap::new()))
+    });
+    
+    cache.lock().unwrap().insert(peer.id.clone(), peer);
+}
+
+#[cfg(feature = "desktop")]
+pub fn remove_peer_from_cache(peer_id: &str) {
+    use std::sync::{Arc, Mutex};
+    use std::collections::HashMap;
+    
+    static PEER_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<String, crate::database::Peer>>>> = std::sync::OnceLock::new();
+    
+    let cache = PEER_CACHE.get_or_init(|| {
+        Arc::new(Mutex::new(HashMap::new()))
+    });
+    
+    cache.lock().unwrap().remove(peer_id);
 }
 
 pub fn send_chat_message(receiver_id: &str, content: &str) -> Result<(), String> {

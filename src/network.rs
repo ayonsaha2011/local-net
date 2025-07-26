@@ -243,6 +243,9 @@ impl NetworkManager {
                                                         peers_map.insert(peer.id.clone(), peer.clone());
                                                     }
                                                     
+                                                    // Update UI cache
+                                                    crate::network_interface::update_peer_cache(peer.clone());
+                                                    
                                                     // Broadcast peer online event
                                                     let _ = message_sender.send(Message::PeerOnline {
                                                         peer_id: peer.id,
@@ -268,6 +271,9 @@ impl NetworkManager {
                                     if name.contains(&peer.id) {
                                         peer.is_online = false;
                                         peer.last_seen = Utc::now().to_rfc3339();
+                                        
+                                        // Update UI cache
+                                        crate::network_interface::remove_peer_from_cache(&peer.id);
                                         
                                         // Broadcast peer offline event
                                         let _ = message_sender.send(Message::PeerOffline {
