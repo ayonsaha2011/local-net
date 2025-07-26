@@ -412,7 +412,7 @@ impl NetworkManager {
     async fn handle_message(&self, message: Message, ws_sender: &mut futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, tokio_tungstenite::tungstenite::Message>) -> Result<(), Box<dyn std::error::Error>> {
         match message {
             Message::ChatMessage { id, sender_id, receiver_id, content, timestamp, message_type } => {
-                println!("💬 Received chat message: {}", content);
+                println!("💬 ✅ Received chat message from {}: {}", sender_id, content);
                 
                 // Store message in database
                 let db_message = database::Message {
@@ -430,14 +430,20 @@ impl NetworkManager {
                 };
                 
                 #[cfg(feature = "desktop")]
-                if let Err(e) = database::insert_message(&db_message) {
-                    eprintln!("Failed to store message: {}", e);
+                match database::insert_message(&db_message) {
+                    Ok(_) => {
+                        println!("💬 📥 Message stored in database successfully");
+                    }
+                    Err(e) => {
+                        eprintln!("💬 ❌ Failed to store message: {}", e);
+                    }
                 }
                 
                 // Broadcast message to UI
                 let _ = self.message_sender.send(Message::ChatMessage {
                     id, sender_id, receiver_id, content, timestamp, message_type
                 });
+                println!("💬 📡 Message broadcasted to UI");
             }
             
             Message::FileTransferRequest { id, sender_id: _, receiver_id: _, filename, file_size, timestamp: _ } => {
@@ -536,6 +542,8 @@ impl NetworkManager {
     }
     
     pub async fn send_message(&self, receiver_id: &str, content: &str) -> Result<(), String> {
+        println!("💬 Sending message to {}: {}", receiver_id, content);
+        
         let message = Message::ChatMessage {
             id: Uuid::new_v4().to_string(),
             sender_id: self.peer_id.clone(),
@@ -547,12 +555,34 @@ impl NetworkManager {
         
         // Find peer and send message
         let peers = self.peers.lock().await;
+        println!("💬 Looking for peer {} in {} discovered peers", receiver_id, peers.len());
+        
         if let Some(peer) = peers.get(receiver_id) {
-            if let Ok(mut stream) = self.connect_to_peer(&peer.ip_address, self.port).await {
-                let message_text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-                stream.send(tokio_tungstenite::tungstenite::Message::Text(message_text)).await
-                    .map_err(|e| e.to_string())?;
+            println!("💬 Found peer: {} at {}:{}", peer.name, peer.ip_address, self.port);
+            match self.connect_to_peer(&peer.ip_address, self.port).await {
+                Ok(mut stream) => {
+                    let message_text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+                    match stream.send(tokio_tungstenite::tungstenite::Message::Text(message_text)).await {
+                        Ok(_) => {
+                            println!("💬 ✅ Message sent successfully to {}", peer.name);
+                        }
+                        Err(e) => {
+                            println!("💬 ❌ Failed to send message: {}", e);
+                            return Err(e.to_string());
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("💬 ❌ Failed to connect to peer {}:{}: {}", peer.ip_address, self.port, e);
+                    return Err(format!("Failed to connect to peer: {}", e));
+                }
             }
+        } else {
+            println!("💬 ❌ Peer {} not found in discovered peers", receiver_id);
+            for (id, peer) in peers.iter() {
+                println!("   Available peer: {} -> {} at {}", id, peer.name, peer.ip_address);
+            }
+            return Err(format!("Peer {} not found", receiver_id));
         }
         
         // Store message locally

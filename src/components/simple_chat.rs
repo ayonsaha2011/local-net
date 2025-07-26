@@ -107,6 +107,49 @@ pub fn ChatView(peer_id: String) -> Element {
         }
     });
 
+    // Set up real-time message listener
+    use_effect({
+        let peer_id_for_listener = peer_id.clone();
+        let messages_clone = messages.clone();
+        move || {
+            #[cfg(feature = "desktop")]
+            {
+                // Start a background task to listen for incoming messages
+                let peer_id_for_task = peer_id_for_listener.clone();
+                let mut messages_for_task = messages_clone.clone();
+                spawn(async move {
+                    loop {
+                        // Check for new messages for this peer
+                        if let Ok(new_messages) = database::get_messages_for_peer(&peer_id_for_task) {
+                            let current_count = messages_for_task.read().len();
+                            if new_messages.len() > current_count {
+                                println!("📱 New messages detected for peer {}: {} -> {}", 
+                                        peer_id_for_task, current_count, new_messages.len());
+                                messages_for_task.set(new_messages);
+                            }
+                        }
+                        #[cfg(feature = "desktop")]
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        #[cfg(not(feature = "desktop"))]
+                        gloo_timers::future::TimeoutFuture::new(500).await;
+                    }
+                });
+            }
+            #[cfg(not(feature = "desktop"))]
+            {
+                // For web, use a simpler polling approach
+                let peer_id_web = peer_id_for_listener.clone();
+                spawn(async move {
+                    loop {
+                        gloo_timers::future::TimeoutFuture::new(1000).await;
+                        // Web version could check for messages via API calls here
+                        println!("📱 Web message check for peer: {}", peer_id_web);
+                    }
+                });
+            }
+        }
+    });
+
     let peer_id_for_send = peer_id.clone();
     let send_message = use_callback(move |_| {
         let content = message_input.read().clone();
