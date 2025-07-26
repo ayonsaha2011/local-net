@@ -119,11 +119,53 @@ impl NetworkManager {
     fn get_local_ip() -> Option<String> {
         use std::net::UdpSocket;
         
-        // Create a UDP socket and connect to a remote address to determine local IP
-        let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-        socket.connect("8.8.8.8:80").ok()?;
-        let local_addr = socket.local_addr().ok()?;
-        Some(local_addr.ip().to_string())
+        // Method 1: Try connecting to external address to determine local IP
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect("8.8.8.8:80").is_ok() {
+                if let Ok(local_addr) = socket.local_addr() {
+                    let ip_str = local_addr.ip().to_string();
+                    println!("🔍 Method 1: Detected local IP via UDP connect: {}", ip_str);
+                    return Some(ip_str);
+                }
+            }
+        }
+        
+        // Method 2: Try using system commands as fallback
+        println!("🔍 Method 1 failed, trying system command...");
+        if let Ok(output) = std::process::Command::new("hostname").arg("-I").output() {
+            if output.status.success() {
+                let ip_list = String::from_utf8_lossy(&output.stdout);
+                for ip in ip_list.split_whitespace() {
+                    if ip.starts_with("192.168.") || ip.starts_with("10.") || ip.starts_with("172.") {
+                        println!("🔍 Method 2: Detected local IP via hostname: {}", ip);
+                        return Some(ip.to_string());
+                    }
+                }
+            }
+        }
+        
+        // Method 3: Try macOS/BSD style ifconfig
+        if let Ok(output) = std::process::Command::new("ifconfig").output() {
+            if output.status.success() {
+                let ifconfig_output = String::from_utf8_lossy(&output.stdout);
+                for line in ifconfig_output.lines() {
+                    if line.contains("inet ") && !line.contains("127.0.0.1") && !line.contains("::1") {
+                        // Extract IP from line like "inet 192.168.1.100 netmask 0xffffff00 broadcast 192.168.1.255"
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if parts.len() >= 2 && parts[0] == "inet" {
+                            let ip = parts[1];
+                            if ip.starts_with("192.168.") || ip.starts_with("10.") || ip.starts_with("172.") {
+                                println!("🔍 Method 3: Detected local IP via ifconfig: {}", ip);
+                                return Some(ip.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        println!("⚠️ Could not detect local IP, using fallback");
+        None
     }
     
     #[cfg(feature = "desktop")]
@@ -373,6 +415,17 @@ impl NetworkManager {
         socket.set_broadcast(true)?;
         
         println!("🔍 UDP peer discovery listening on port 8080");
+        println!("🔍 Local IP detected as: {}", self.local_ip);
+        println!("🔍 Peer ID: {}", self.peer_id);
+        println!("🔍 Username: {}", self.username);
+        
+        // Test if we can determine our actual network interface
+        if let Ok(interfaces) = self.get_network_interfaces() {
+            println!("🌐 Available network interfaces:");
+            for interface in interfaces {
+                println!("   - {}", interface);
+            }
+        }
         
         let mut buffer = [0; 1024];
         
@@ -380,12 +433,14 @@ impl NetworkManager {
             match socket.recv_from(&mut buffer).await {
                 Ok((len, addr)) => {
                     let data = &buffer[..len];
+                    println!("📨 Received {} bytes from {}", len, addr);
                     
                     if let Ok(message) = serde_json::from_slice::<Message>(data) {
+                        println!("✅ Successfully parsed message from {}", addr);
                     match message {
                         Message::PeerDiscovery { peer_id, name, ip_address, port: _ } => {
                             if peer_id != self.peer_id {
-                                println!("🆕 Discovered peer: {} ({}:{})", name, ip_address, self.port);
+                                println!("🆕 Discovered new peer: {} ({}:{})", name, ip_address, self.port);
                                 
                                 let peer = database::Peer {
                                     id: peer_id.clone(),
@@ -441,8 +496,12 @@ impl NetworkManager {
                                 });
                             }
                         }
-                        _ => {}
+                        _ => {
+                            println!("🤷 Received unknown message type from {}", addr);
+                        }
                     }
+                } else {
+                    println!("❌ Failed to parse message from {}: {:?}", addr, String::from_utf8_lossy(data));
                 }
                 }
                 Err(e) => {
@@ -458,15 +517,22 @@ impl NetworkManager {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         
         let socket = match UdpSocket::bind("0.0.0.0:0").await {
-            Ok(s) => s,
+            Ok(s) => {
+                if let Ok(local_addr) = s.local_addr() {
+                    println!("🔌 UDP broadcast socket bound to: {}", local_addr);
+                } else {
+                    println!("🔌 UDP broadcast socket bound successfully");
+                }
+                s
+            }
             Err(e) => {
-                eprintln!("Failed to bind UDP broadcast socket: {}", e);
+                eprintln!("❌ Failed to bind UDP broadcast socket: {}", e);
                 return;
             }
         };
         
         if let Err(e) = socket.set_broadcast(true) {
-            eprintln!("Failed to set broadcast on UDP socket: {}", e);
+            eprintln!("❌ Failed to set broadcast on UDP socket: {}", e);
             return;
         }
         
@@ -477,27 +543,70 @@ impl NetworkManager {
             port: self.port,
         };
         
+        println!("🚀 Starting peer discovery broadcast...");
+        println!("📋 Broadcast details:");
+        println!("   - Peer ID: {}", self.peer_id);
+        println!("   - Username: {}", self.username);
+        println!("   - Local IP: {}", self.local_ip);
+        println!("   - Port: {}", self.port);
+        
         loop {
             match serde_json::to_vec(&discovery_message) {
                 Ok(data) => {
-                    // Broadcast to local network
-                    if let Err(e) = socket.send_to(&data, "255.255.255.255:8080").await {
-                        eprintln!("Failed to broadcast discovery message: {}", e);
-                    } else {
-                        println!("📡 Broadcasting peer discovery from {}...", self.local_ip);
+                    println!("📡 Broadcasting discovery message ({} bytes)", data.len());
+                    
+                    // Broadcast to global broadcast address
+                    match socket.send_to(&data, "255.255.255.255:8080").await {
+                        Ok(bytes_sent) => {
+                            println!("✅ Sent {} bytes to 255.255.255.255:8080", bytes_sent);
+                        }
+                        Err(e) => {
+                            eprintln!("❌ Failed to broadcast to 255.255.255.255:8080: {}", e);
+                        }
                     }
                     
-                    // Also try common local network ranges
+                    // Also try local network broadcast
                     let local_broadcast = self.get_network_broadcast();
                     if let Some(broadcast_addr) = local_broadcast {
-                        let _ = socket.send_to(&data, format!("{}:8080", broadcast_addr)).await;
+                        let target = format!("{}:8080", broadcast_addr);
+                        match socket.send_to(&data, &target).await {
+                            Ok(bytes_sent) => {
+                                println!("✅ Sent {} bytes to local broadcast {}", bytes_sent, target);
+                            }
+                            Err(e) => {
+                                eprintln!("❌ Failed to broadcast to {}: {}", target, e);
+                            }
+                        }
+                    } else {
+                        println!("⚠️ Could not determine local network broadcast address");
+                    }
+                    
+                    // Try additional common network ranges
+                    let common_ranges = vec![
+                        "192.168.1.255:8080",
+                        "192.168.0.255:8080", 
+                        "10.0.0.255:8080",
+                        "172.16.255.255:8080"
+                    ];
+                    
+                    for range in common_ranges {
+                        match socket.send_to(&data, range).await {
+                            Ok(bytes_sent) => {
+                                println!("✅ Sent {} bytes to common range {}", bytes_sent, range);
+                            }
+                            Err(e) => {
+                                // Don't spam errors for ranges that might not exist
+                                println!("⚠️ Could not reach {}: {}", range, e);
+                            }
+                        }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to serialize discovery message: {}", e);
+                    eprintln!("❌ Failed to serialize discovery message: {}", e);
                 }
             }
             
+            println!("⏰ Waiting 30 seconds before next broadcast...");
             tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
         }
     }
@@ -510,6 +619,30 @@ impl NetworkManager {
         } else {
             None
         }
+    }
+    
+    fn get_network_interfaces(&self) -> Result<Vec<String>, String> {
+        use std::process::Command;
+        
+        let output = Command::new("ip")
+            .args(&["addr", "show"])
+            .output()
+            .map_err(|e| format!("Failed to run ip command: {}", e))?;
+            
+        if !output.status.success() {
+            return Err("ip command failed".to_string());
+        }
+        
+        let output_str = String::from_utf8_lossy(&output.stdout);
+        let mut interfaces = Vec::new();
+        
+        for line in output_str.lines() {
+            if line.contains("inet ") && !line.contains("127.0.0.1") {
+                interfaces.push(line.trim().to_string());
+            }
+        }
+        
+        Ok(interfaces)
     }
     
     #[cfg(not(feature = "desktop"))]
