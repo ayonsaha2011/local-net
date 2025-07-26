@@ -156,6 +156,19 @@ impl NetworkManager {
         self.start_mdns_discovery().await?;
         
         println!("✅ mDNS network services started successfully");
+        
+        // TEMPORARY: Add a test peer to verify UI works
+        let test_peer = database::Peer {
+            id: "test-peer-123".to_string(),
+            name: "Test Machine".to_string(),
+            avatar: None,
+            last_seen: Utc::now().to_rfc3339(),
+            is_online: true,
+            ip_address: "192.168.1.200".to_string(),
+        };
+        println!("🧪 TEST: Adding test peer to cache immediately");
+        crate::peer_cache::add_peer(test_peer);
+        
         Ok(())
     }
     
@@ -227,6 +240,7 @@ impl NetworkManager {
                                         match serde_json::from_str::<database::Peer>(value) {
                                             Ok(mut peer) => {
                                                 // Don't add ourselves
+                                                println!("🔍 MDNS: Comparing peer ID {} with local ID {}", peer.id, local_peer_id);
                                                 if peer.id != local_peer_id {
                                                     // Update IP from service info
                                                     if let Some(addr) = info.get_addresses().iter().next() {
@@ -252,6 +266,8 @@ impl NetworkManager {
                                                         name: peer.name,
                                                         ip_address: peer.ip_address,
                                                     });
+                                                } else {
+                                                    println!("🚫 MDNS: Skipping self-discovery of peer: {}", peer.name);
                                                 }
                                             }
                                             Err(e) => {

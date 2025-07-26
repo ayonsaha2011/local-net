@@ -6,6 +6,7 @@ mod database;
 #[cfg(feature = "desktop")]
 mod network;
 mod network_interface;
+mod peer_cache;
 use components::peer_list::PeerList;
 use components::chat_view::ChatView;
 use components::settings::Settings;

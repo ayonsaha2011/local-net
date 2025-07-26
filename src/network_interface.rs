@@ -140,20 +140,8 @@ pub fn discover_peers() -> Vec<database::Peer> {
     // Use the new mDNS network manager instead of the old interface
     #[cfg(feature = "desktop")]
     {
-        // Since we're already in a runtime, we need to use a different approach
-        // We'll cache the peers in a static variable that gets updated by the network manager
-        use std::sync::{Arc, Mutex};
-        use std::collections::HashMap;
-        
-        // Static cache for discovered peers
-        static PEER_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<String, crate::database::Peer>>>> = std::sync::OnceLock::new();
-        
-        let cache = PEER_CACHE.get_or_init(|| {
-            Arc::new(Mutex::new(HashMap::new()))
-        });
-        
-        let peers = cache.lock().unwrap().values().cloned().collect::<Vec<_>>();
-        println!("🔍 UI: Got {} peers from peer cache", peers.len());
+        let peers = crate::peer_cache::get_all_peers();
+        println!("🔍 UI: Got {} peers from shared peer cache", peers.len());
         peers
     }
     
@@ -169,30 +157,12 @@ pub fn discover_peers() -> Vec<database::Peer> {
 // Functions to manage the peer cache (called by the network manager)
 #[cfg(feature = "desktop")]
 pub fn update_peer_cache(peer: crate::database::Peer) {
-    use std::sync::{Arc, Mutex};
-    use std::collections::HashMap;
-    
-    static PEER_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<String, crate::database::Peer>>>> = std::sync::OnceLock::new();
-    
-    let cache = PEER_CACHE.get_or_init(|| {
-        Arc::new(Mutex::new(HashMap::new()))
-    });
-    
-    cache.lock().unwrap().insert(peer.id.clone(), peer);
+    crate::peer_cache::add_peer(peer);
 }
 
 #[cfg(feature = "desktop")]
 pub fn remove_peer_from_cache(peer_id: &str) {
-    use std::sync::{Arc, Mutex};
-    use std::collections::HashMap;
-    
-    static PEER_CACHE: std::sync::OnceLock<Arc<Mutex<HashMap<String, crate::database::Peer>>>> = std::sync::OnceLock::new();
-    
-    let cache = PEER_CACHE.get_or_init(|| {
-        Arc::new(Mutex::new(HashMap::new()))
-    });
-    
-    cache.lock().unwrap().remove(peer_id);
+    crate::peer_cache::remove_peer(peer_id);
 }
 
 pub fn send_chat_message(receiver_id: &str, content: &str) -> Result<(), String> {
