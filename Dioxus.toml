@@ -1,0 +1,25 @@
+[application]
+name = "local-net-chat"
+
+[web.app]
+# HTML title tag content
+title = "local-net-chat"
+
+[desktop.app]
+title = "Local Network Chat"
+
+# include `assets` in web platform
+[web.resource]
+# Additional CSS style files
+style = []
+# Additional JavaScript files
+script = []
+
+[web.resource.dev]
+# Javascript code file
+# serve: [dev-server] only
+script = []
+
+[web]
+# The platform to serve by default
+default_platform = "web"

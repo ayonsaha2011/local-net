@@ -1,0 +1,10 @@
+[env]
+# Force use of system libraries to avoid snap glibc conflicts
+LD_LIBRARY_PATH = { value = "/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib64", force = true }
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = [
+    "-C", "link-arg=-Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2",
+    "-C", "link-arg=-Wl,--rpath=/lib/x86_64-linux-gnu:/usr/lib/x86_64-linux-gnu",
+    "-C", "link-arg=-Wl,--as-needed"
+]
