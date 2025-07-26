@@ -1,8 +1,6 @@
 use dioxus::prelude::*;
 use crate::{Route, database};
 
-use std::future::Future;
-
 #[component]
 pub fn PeerList() -> Element {
     let mut show_dropdown = use_signal(|| false);
@@ -22,7 +20,7 @@ pub fn PeerList() -> Element {
         // Add discovered peers from network
         let discovered_peers = crate::network_interface::discover_peers();
         for peer in discovered_peers {
-            if !all_peers.iter().any(|p| p.id == peer.id) {
+            if !all_peers.iter().any(|p: &database::Peer| p.id == peer.id) {
                 all_peers.push(peer);
             }
         }
@@ -30,12 +28,19 @@ pub fn PeerList() -> Element {
         peers.set(all_peers);
     });
     
-    // Auto-refresh peers every 5 seconds
+    // Auto-refresh peers every 5 seconds using Dioxus spawn
     use_effect(move || {
-        let peers_setter = peers.clone();
-        std::thread::spawn(move || {
+        spawn(async move {
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                #[cfg(feature = "desktop")]
+                {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                }
+                #[cfg(not(feature = "desktop"))]
+                {
+                    // For web, use a simple timer simulation
+                    gloo_timers::future::TimeoutFuture::new(5000).await;
+                }
                 
                 let mut all_peers = Vec::new();
                 
@@ -48,12 +53,12 @@ pub fn PeerList() -> Element {
                 // Add discovered peers
                 let discovered_peers = crate::network_interface::discover_peers();
                 for peer in discovered_peers {
-                    if !all_peers.iter().any(|p| p.id == peer.id) {
+                    if !all_peers.iter().any(|p: &database::Peer| p.id == peer.id) {
                         all_peers.push(peer);
                     }
                 }
                 
-                peers_setter.set(all_peers);
+                peers.set(all_peers);
             }
         });
     });
