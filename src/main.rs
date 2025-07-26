@@ -38,8 +38,15 @@ fn main() {
             let rt = tokio::runtime::Runtime::new().unwrap();
             rt.block_on(async {
                 network::start_network().await;
+                // Keep the runtime alive
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
             });
         });
+        
+        // Give network time to start
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
     dioxus::launch(App);

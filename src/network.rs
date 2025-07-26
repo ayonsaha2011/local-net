@@ -62,6 +62,20 @@ pub enum Message {
     PeerOffline {
         peer_id: String,
     },
+    
+    // Peer discovery messages
+    PeerDiscovery {
+        peer_id: String,
+        name: String,
+        ip_address: String,
+        port: u16,
+    },
+    PeerResponse {
+        peer_id: String,
+        name: String,
+        ip_address: String,
+        port: u16,
+    },
 }
 
 pub struct NetworkManager {
@@ -152,173 +166,197 @@ impl NetworkManager {
             }
         });
         
-        // Start mDNS discovery
-        self.start_mdns_discovery().await?;
+        // Start UDP peer discovery
+        self.start_udp_discovery().await?;
         
-        println!("✅ mDNS network services started successfully");
-        
-        // TEMPORARY: Add a test peer to verify UI works
-        let test_peer = database::Peer {
-            id: "test-peer-123".to_string(),
-            name: "Test Machine".to_string(),
-            avatar: None,
-            last_seen: Utc::now().to_rfc3339(),
-            is_online: true,
-            ip_address: "192.168.1.200".to_string(),
-        };
-        println!("🧪 TEST: Adding test peer to cache immediately");
-        crate::peer_cache::add_peer(test_peer);
-        
+        println!("✅ UDP network services started successfully");
         Ok(())
     }
     
     #[cfg(feature = "desktop")]
-    async fn start_mdns_discovery(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("🔍 Starting mDNS peer discovery...");
+    async fn start_udp_discovery(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        println!("🔍 Starting UDP peer discovery...");
         
-        // Create mDNS daemon
-        let daemon = ServiceDaemon::new()?;
-        println!("✅ mDNS daemon created");
-        
-        // Create our service info
-        let peer_info = database::Peer {
-            id: self.peer_id.clone(),
-            name: self.username.clone(),
-            avatar: None,
-            last_seen: Utc::now().to_rfc3339(),
-            is_online: true,
-            ip_address: self.local_ip.clone(),
-        };
-        
-        let peer_json = serde_json::to_string(&peer_info)?;
-        
-        // Create service info with our peer data
-        let service_info = ServiceInfo::new(
-            SERVICE_TYPE,
-            &self.service_name,
-            &self.username,
-            &self.local_ip,
-            SERVICE_PORT,
-            Some({
-                let mut txt_records = HashMap::new();
-                txt_records.insert("peer".to_string(), peer_json);
-                txt_records
-            }),
-        )?;
-        
-        // Register our service
-        daemon.register(service_info)?;
-        println!("✅ mDNS service registered: {}", self.service_name);
-        
-        // Browse for other services
-        let browse_handle = daemon.browse(SERVICE_TYPE)?;
-        println!("✅ Started browsing for peers");
-        
-        // Store daemon
-        self.mdns_daemon = Some(daemon);
-        
-        // Handle mDNS events
-        let peers = Arc::clone(&self.peers);
-        let message_sender = self.message_sender.clone();
-        let local_peer_id = self.peer_id.clone();
-        
+        // Start UDP listener
+        let listener_manager = self.clone();
         tokio::spawn(async move {
-            println!("🔄 mDNS event handler started");
-            
-            loop {
-                match browse_handle.recv_timeout(std::time::Duration::from_secs(1)) {
-                    Ok(event) => {
-                        match event {
-                            ServiceEvent::ServiceResolved(info) => {
-                                println!("🆕 mDNS service resolved: {}", info.get_fullname());
-                                
-                                // Extract peer info from TXT records
-                                let txt_properties = info.get_properties();
-                                for record in txt_properties.iter() {
-                                    if record.key() == "peer" {
-                                        let value = record.val_str();
-                                        match serde_json::from_str::<database::Peer>(value) {
-                                            Ok(mut peer) => {
-                                                // Don't add ourselves
-                                                println!("🔍 MDNS: Comparing peer ID {} with local ID {}", peer.id, local_peer_id);
-                                                if peer.id != local_peer_id {
-                                                    // Update IP from service info
-                                                    if let Some(addr) = info.get_addresses().iter().next() {
-                                                        peer.ip_address = addr.to_string();
-                                                    }
-                                                    peer.last_seen = Utc::now().to_rfc3339();
-                                                    peer.is_online = true;
-                                                    
-                                                    println!("✅ Discovered peer: {} at {}", peer.name, peer.ip_address);
-                                                    
-                                                    // Store peer
-                                                    {
-                                                        let mut peers_map = peers.lock().await;
-                                                        peers_map.insert(peer.id.clone(), peer.clone());
-                                                    }
-                                                    
-                                                    // Update UI cache
-                                                    crate::network_interface::update_peer_cache(peer.clone());
-                                                    
-                                                    // Broadcast peer online event
-                                                    let _ = message_sender.send(Message::PeerOnline {
-                                                        peer_id: peer.id,
-                                                        name: peer.name,
-                                                        ip_address: peer.ip_address,
-                                                    });
-                                                } else {
-                                                    println!("🚫 MDNS: Skipping self-discovery of peer: {}", peer.name);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                println!("❌ Failed to parse peer data: {}", e);
-                                            }
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-                            ServiceEvent::ServiceRemoved(service_type, name) => {
-                                println!("📴 mDNS service removed: {} {}", service_type, name);
-                                
-                                // Find and mark peer as offline
-                                let mut peers_map = peers.lock().await;
-                                for (peer_id, peer) in peers_map.iter_mut() {
-                                    if name.contains(&peer.id) {
-                                        peer.is_online = false;
-                                        peer.last_seen = Utc::now().to_rfc3339();
-                                        
-                                        // Update UI cache
-                                        crate::network_interface::remove_peer_from_cache(&peer.id);
-                                        
-                                        // Broadcast peer offline event
-                                        let _ = message_sender.send(Message::PeerOffline {
-                                            peer_id: peer_id.clone(),
-                                        });
-                                        break;
-                                    }
-                                }
-                            }
-                            ServiceEvent::SearchStarted(service_type) => {
-                                println!("🔍 mDNS search started for: {}", service_type);
-                            }
-                            ServiceEvent::SearchStopped(service_type) => {
-                                println!("🛑 mDNS search stopped for: {}", service_type);
-                            }
-                            _ => {
-                                println!("📨 Other mDNS event: {:?}", event);
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Timeout, continue loop
-                        continue;
-                    }
-                }
+            println!("🔍 Starting UDP listener task...");
+            if let Err(e) = listener_manager.start_udp_listener().await {
+                eprintln!("UDP listener error: {}", e);
             }
         });
         
+        // Start UDP broadcaster
+        let broadcaster_manager = self.clone();
+        tokio::spawn(async move {
+            println!("📡 Starting UDP broadcaster task...");
+            broadcaster_manager.start_udp_broadcaster().await;
+        });
+        
+        println!("✅ UDP discovery started");
         Ok(())
+    }
+    
+    #[cfg(feature = "desktop")]
+    async fn start_udp_listener(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::net::UdpSocket;
+        
+        let socket = UdpSocket::bind("0.0.0.0:8082").await?;
+        if let Ok(local_addr) = socket.local_addr() {
+            println!("🔍 UDP listener bound to: {}", local_addr);
+        } else {
+            println!("🔍 UDP listener bound to port 8080");
+        }
+        
+        println!("🔍 Listening for peer discovery messages from: {} ({})", self.username, self.peer_id);
+        
+        let mut buffer = [0; 1024];
+        
+        loop {
+            match socket.recv_from(&mut buffer).await {
+                Ok((len, addr)) => {
+                    let data = &buffer[..len];
+                    println!("🔍 ✅ Received {} bytes from {}", len, addr);
+                    
+                    match serde_json::from_slice::<Message>(data) {
+                        Ok(message) => {
+                            println!("🔍 📨 Parsed message: {:?}", message);
+                            match message {
+                            Message::PeerDiscovery { peer_id, name, ip_address, port: _ } => {
+                                if peer_id != self.peer_id {
+                                    println!("🆕 Discovered peer via UDP: {} at {}", name, ip_address);
+                                    
+                                    let peer = database::Peer {
+                                        id: peer_id.clone(),
+                                        name: name.clone(),
+                                        avatar: None,
+                                        last_seen: Utc::now().to_rfc3339(),
+                                        is_online: true,
+                                        ip_address: ip_address.clone(),
+                                    };
+                                    
+                                    // Store peer
+                                    {
+                                        let mut peers_map = self.peers.lock().await;
+                                        peers_map.insert(peer_id.clone(), peer.clone());
+                                    }
+                                    
+                                    // Update UI cache
+                                    crate::peer_cache::add_peer(peer.clone());
+                                    
+                                    // Send response back
+                                    let response = Message::PeerResponse {
+                                        peer_id: self.peer_id.clone(),
+                                        name: self.username.clone(),
+                                        ip_address: self.local_ip.clone(),
+                                        port: self.port,
+                                    };
+                                    
+                                    if let Ok(response_data) = serde_json::to_vec(&response) {
+                                        let _ = socket.send_to(&response_data, addr).await;
+                                    }
+                                }
+                            }
+                            Message::PeerResponse { peer_id, name, ip_address, port: _ } => {
+                                if peer_id != self.peer_id {
+                                    println!("📨 Received peer response via UDP: {} at {}", name, ip_address);
+                                    
+                                    let peer = database::Peer {
+                                        id: peer_id.clone(),
+                                        name: name.clone(),
+                                        avatar: None,
+                                        last_seen: Utc::now().to_rfc3339(),
+                                        is_online: true,
+                                        ip_address: ip_address.clone(),
+                                    };
+                                    
+                                    // Store peer
+                                    {
+                                        let mut peers_map = self.peers.lock().await;
+                                        peers_map.insert(peer_id.clone(), peer.clone());
+                                    }
+                                    
+                                    // Update UI cache
+                                    crate::peer_cache::add_peer(peer);
+                                }
+                            }
+                                _ => {
+                                    println!("🔍 📨 Received other message type");
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            println!("🔍 ❌ Failed to parse message from {}: {}", addr, e);
+                            println!("🔍    Raw data: {:?}", std::str::from_utf8(data).unwrap_or("invalid UTF-8"));
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("UDP receive error: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+    
+    #[cfg(feature = "desktop")]
+    async fn start_udp_broadcaster(&self) {
+        use tokio::net::UdpSocket;
+        
+        // Wait a bit before starting broadcasts
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        
+        let socket = match UdpSocket::bind("0.0.0.0:0").await {
+            Ok(s) => {
+                if let Ok(local_addr) = s.local_addr() {
+                    println!("📡 UDP broadcaster bound to: {}", local_addr);
+                } else {
+                    println!("📡 UDP broadcaster bound to unknown local address");
+                }
+                s
+            },
+            Err(e) => {
+                eprintln!("❌ Failed to bind UDP broadcaster: {}", e);
+                return;
+            }
+        };
+        
+        if let Err(e) = socket.set_broadcast(true) {
+            eprintln!("❌ Failed to set broadcast: {}", e);
+            return;
+        }
+        
+        println!("📡 UDP broadcaster started successfully");
+        println!("📡 Will broadcast as: {} ({}) at {}", self.username, self.peer_id, self.local_ip);
+        
+        loop {
+            let discovery_message = Message::PeerDiscovery {
+                peer_id: self.peer_id.clone(),
+                name: self.username.clone(),
+                ip_address: self.local_ip.clone(),
+                port: self.port,
+            };
+            
+            match serde_json::to_vec(&discovery_message) {
+                Ok(data) => {
+                    // Broadcast to local network
+                    match socket.send_to(&data, "255.255.255.255:8082").await {
+                        Ok(bytes_sent) => {
+                            println!("📡 ✅ Broadcast sent: {} bytes to 255.255.255.255:8082", bytes_sent);
+                            println!("📡    Message: {} at {} (peer_id: {})", self.username, self.local_ip, self.peer_id);
+                        },
+                        Err(e) => {
+                            eprintln!("📡 ❌ Broadcast failed: {}", e);
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("📡 ❌ Failed to serialize discovery message: {}", e);
+                }
+            }
+            
+            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await; // More frequent broadcasts for debugging
+        }
     }
     
     #[cfg(not(feature = "desktop"))]
@@ -421,6 +459,35 @@ impl NetworkManager {
                 let _ = self.message_sender.send(Message::TypingIndicator {
                     sender_id, receiver_id, is_typing
                 });
+            }
+            
+            Message::FileTransferResponse { id, accepted, port } => {
+                println!("📁 File transfer response: {} (accepted: {})", id, accepted);
+                // Handle file transfer response
+            }
+            
+            Message::FileChunk { transfer_id, chunk_index, total_chunks, data } => {
+                println!("📦 Received file chunk {}/{} for transfer {}", 
+                        chunk_index + 1, total_chunks, transfer_id);
+                // Handle file chunk
+            }
+            
+            Message::PeerOnline { peer_id, name, ip_address } => {
+                println!("🟢 Peer came online: {} at {}", name, ip_address);
+                let peer = database::Peer {
+                    id: peer_id.clone(),
+                    name: name.clone(),
+                    avatar: None,
+                    last_seen: chrono::Utc::now().to_rfc3339(),
+                    is_online: true,
+                    ip_address: ip_address.clone(),
+                };
+                crate::peer_cache::add_peer(peer);
+            }
+            
+            Message::PeerOffline { peer_id } => {
+                println!("🔴 Peer went offline: {}", peer_id);
+                crate::peer_cache::remove_peer(&peer_id);
             }
             
             _ => {
