@@ -2,6 +2,90 @@ use dioxus::prelude::*;
 use dioxus::events::{KeyboardData};
 use crate::{Route, database};
 
+fn send_file(peer_id: &str) {
+    #[cfg(feature = "desktop")]
+    {
+        if let Some(file_path) = select_file_to_send() {
+            if let Err(e) = crate::network_interface::send_file(peer_id, &file_path) {
+                eprintln!("Failed to send file: {}", e);
+            }
+        }
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        // For web version, we need to use HTML file input
+        // This is a placeholder - in a real web app, you'd trigger a file input element
+        println!("📎 Opening file selector for web...");
+        web_select_file(peer_id);
+    }
+}
+
+#[cfg(not(feature = "desktop"))]
+fn web_select_file(peer_id: &str) {
+    // In a real web implementation, this would:
+    // 1. Create or trigger an HTML file input element
+    // 2. Handle the file selection event
+    // 3. Read the file using FileReader API
+    // 4. Send the file data
+    
+    // For now, simulate file selection
+    println!("📱 Web file selector opened");
+    
+    // Simulate a file being selected
+    let mock_file = crate::database::FileTransfer {
+        id: None,
+        name: "web_file.txt".to_string(),
+        size: 1024,
+        path: "mock://web_file.txt".to_string(),
+        status: "pending".to_string(),
+        progress: 0.0,
+        sender_id: "self".to_string(),
+        receiver_id: peer_id.to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+    };
+    
+    // Store in web storage
+    if let Err(e) = crate::database::insert_file_transfer(&mock_file) {
+        eprintln!("Failed to store mock file transfer: {}", e);
+    } else {
+        println!("📤 Mock file transfer created for web");
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn select_file_to_send() -> Option<String> {
+    use std::process::Command;
+    
+    // Try to use native file dialogs on different platforms
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = Command::new("zenity")
+            .args(&["--file-selection", "--title=Select File to Send"])
+            .output()
+        {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return Some(path);
+            }
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, we could use PowerShell file dialogs
+        // For now, just use a placeholder
+        println!("📁 Please enter file path manually (file dialog not implemented for Windows)");
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, we could use osascript
+        println!("📁 Please enter file path manually (file dialog not implemented for macOS)");
+    }
+    
+    None
+}
+
 #[component]
 pub fn ChatView(peer_id: String) -> Element {
     let mut messages = use_signal(Vec::new);
@@ -134,6 +218,14 @@ pub fn ChatView(peer_id: String) -> Element {
                                 }
                             }
                         },
+                    }
+                    button {
+                        class: "glass-button",
+                        style: "width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; padding: 0; font-size: 18px; margin-right: 8px;",
+                        onclick: move |_| {
+                            send_file(&peer_id);
+                        },
+                        "📎"
                     }
                     button {
                         class: if message_input.read().trim().is_empty() { "glass-button" } else { "glass-button primary" },

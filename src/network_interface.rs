@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::collections::HashMap;
 use crate::database;
 
 // Simple synchronous interface for the UI to interact with networking
@@ -52,36 +51,23 @@ impl NetworkInterface {
             return Err(format!("Failed to store message: {}", e));
         }
         
-        // TODO: Send over network (placeholder for now)
-        println!("📤 Sending message to {}: {}", receiver_id, content);
+        // Send over network using the network manager
+        let receiver_id = receiver_id.to_string();
+        let content = content.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = crate::network::send_chat_message(&receiver_id, &content).await {
+                eprintln!("Failed to send message over network: {}", e);
+            }
+        });
         
         Ok(())
     }
     
-    pub fn simulate_discovery(&self) {
-        // Add some simulated peers for testing
-        let test_peers = vec![
-            database::Peer {
-                id: "peer-1".to_string(),
-                name: "Alice's Computer".to_string(),
-                avatar: None,
-                last_seen: chrono::Utc::now().to_rfc3339(),
-                is_online: true,
-                ip_address: "192.168.1.101".to_string(),
-            },
-            database::Peer {
-                id: "peer-2".to_string(),
-                name: "Bob's Laptop".to_string(),
-                avatar: None,
-                last_seen: chrono::Utc::now().to_rfc3339(),
-                is_online: true,
-                ip_address: "192.168.1.102".to_string(),
-            },
-        ];
-        
-        let mut peers = self.discovered_peers.lock().unwrap();
-        peers.extend(test_peers);
-        println!("🔍 Simulated peer discovery complete");
+    pub async fn update_discovered_peers(&self) {
+        // Get real discovered peers from the network manager
+        let peers = crate::network::get_discovered_peers().await;
+        let mut discovered = self.discovered_peers.lock().unwrap();
+        *discovered = peers;
     }
 }
 
@@ -91,22 +77,72 @@ static NETWORK_INTERFACE: std::sync::OnceLock<NetworkInterface> = std::sync::Onc
 pub fn get_network_interface() -> &'static NetworkInterface {
     NETWORK_INTERFACE.get_or_init(|| {
         let interface = NetworkInterface::new();
-        // Start peer discovery simulation after a short delay
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            if let Some(interface) = NETWORK_INTERFACE.get() {
-                interface.simulate_discovery();
+        // Start periodic peer list updates
+        tokio::spawn(async {
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                if let Some(interface) = NETWORK_INTERFACE.get() {
+                    interface.update_discovered_peers().await;
+                }
             }
         });
         interface
     })
 }
 
-// Public API functions for UI
+// Public API functions for UI  
 pub fn discover_peers() -> Vec<database::Peer> {
     get_network_interface().get_discovered_peers()
 }
 
 pub fn send_chat_message(receiver_id: &str, content: &str) -> Result<(), String> {
     get_network_interface().send_message(receiver_id, content)
+}
+
+pub fn send_file(receiver_id: &str, file_path: &str) -> Result<(), String> {
+    #[cfg(feature = "desktop")]
+    {
+        // Get file info
+        let file_metadata = std::fs::metadata(file_path).map_err(|e| e.to_string())?;
+        let file_size = file_metadata.len();
+        let filename = std::path::Path::new(file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        
+        // Create file transfer record
+        let transfer = database::FileTransfer {
+            id: None,
+            name: filename.clone(),
+            size: file_size as i64,
+            path: file_path.to_string(),
+            status: "pending".to_string(),
+            progress: 0.0,
+            sender_id: "self".to_string(),
+            receiver_id: receiver_id.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+        };
+        
+        // Store in database
+        if let Err(e) = database::insert_file_transfer(&transfer) {
+            return Err(format!("Failed to store file transfer: {}", e));
+        }
+        
+        // Send file transfer request over network
+        let receiver_id = receiver_id.to_string();
+        let filename_clone = filename.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::network::send_file_transfer_request(&receiver_id, &filename_clone, file_size).await {
+                eprintln!("Failed to send file transfer request: {}", e);
+            }
+        });
+        
+        println!("📤 File transfer request sent: {} ({} bytes)", filename, file_size);
+        Ok(())
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        Err("File sending not supported in web version".into())
+    }
 }

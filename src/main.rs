@@ -47,6 +47,12 @@ fn main() {
 #[component]
 fn App() -> Element {
     rsx! {
+        head {
+            meta {
+                name: "viewport",
+                content: "width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+            }
+        }
         style {
             "
             :root {{
@@ -154,6 +160,52 @@ fn App() -> Element {
                 to {{
                     opacity: 1;
                     transform: translateY(0);
+                }}
+            }}
+
+            /* Mobile Responsive Styles */
+            @media (max-width: 768px) {{
+                body {{
+                    margin: 0;
+                    padding: 0;
+                }}
+                
+                .glass-container {{
+                    margin: 0;
+                    border-radius: 0;
+                    border-left: none;
+                    border-right: none;
+                }}
+                
+                .glass-button {{
+                    padding: 14px 16px;
+                    font-size: 16px;
+                    min-height: 44px;
+                    touch-action: manipulation;
+                }}
+                
+                .glass-input {{
+                    padding: 14px 16px;
+                    font-size: 16px;
+                    min-height: 44px;
+                }}
+                
+                /* Larger touch targets for mobile */
+                button, input, select, textarea {{
+                    min-height: 44px;
+                    font-size: 16px;
+                }}
+            }}
+            
+            @media (max-width: 480px) {{
+                .glass-button {{
+                    padding: 12px 14px;
+                    font-size: 14px;
+                }}
+                
+                .glass-input {{
+                    padding: 12px 14px;
+                    font-size: 14px;
                 }}
             }}
 

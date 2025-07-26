@@ -2,6 +2,9 @@
 use rusqlite::{Connection, Result};
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(feature = "desktop"))]
+pub type Result<T> = std::result::Result<T, String>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Peer {
     pub id: String,
@@ -293,3 +296,233 @@ pub fn get_settings() -> Result<Settings> {
         max_file_size,
     })
 }
+
+#[cfg(feature = "desktop")]
+pub fn insert_file_transfer(transfer: &FileTransfer) -> Result<i64> {
+    let conn = get_connection()?;
+    conn.execute(
+        "INSERT INTO file_transfers (name, size, path, status, progress, sender_id, receiver_id, timestamp)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        [
+            &transfer.name,
+            &transfer.size.to_string(),
+            &transfer.path,
+            &transfer.status,
+            &transfer.progress.to_string(),
+            &transfer.sender_id,
+            &transfer.receiver_id,
+            &transfer.timestamp,
+        ],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[cfg(feature = "desktop")]
+pub fn update_file_transfer_status(id: i64, status: &str, progress: f64) -> Result<()> {
+    let conn = get_connection()?;
+    conn.execute(
+        "UPDATE file_transfers SET status = ?1, progress = ?2 WHERE id = ?3",
+        [status, &progress.to_string(), &id.to_string()],
+    )?;
+    Ok(())
+}
+
+#[cfg(feature = "desktop")]
+pub fn get_file_transfers() -> Result<Vec<FileTransfer>> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, size, path, status, progress, sender_id, receiver_id, timestamp 
+         FROM file_transfers ORDER BY timestamp DESC"
+    )?;
+    
+    let transfer_iter = stmt.query_map([], |row| {
+        Ok(FileTransfer {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            size: row.get::<_, i64>(2)?,
+            path: row.get(3)?,
+            status: row.get(4)?,
+            progress: row.get::<_, String>(5)?.parse().unwrap_or(0.0),
+            sender_id: row.get(6)?,
+            receiver_id: row.get(7)?,
+            timestamp: row.get(8)?,
+        })
+    })?;
+
+    let mut transfers = Vec::new();
+    for transfer in transfer_iter {
+        transfers.push(transfer?);
+    }
+    Ok(transfers)
+}
+
+#[cfg(feature = "desktop")]
+pub fn get_file_transfer_by_id(transfer_id: &str) -> Result<Option<FileTransfer>> {
+    let conn = get_connection()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, size, path, status, progress, sender_id, receiver_id, timestamp 
+         FROM file_transfers WHERE name = ?1 OR id = ?2"
+    )?;
+    
+    let mut transfer_iter = stmt.query_map([transfer_id, transfer_id], |row| {
+        Ok(FileTransfer {
+            id: Some(row.get(0)?),
+            name: row.get(1)?,
+            size: row.get::<_, i64>(2)?,
+            path: row.get(3)?,
+            status: row.get(4)?,
+            progress: row.get::<_, String>(5)?.parse().unwrap_or(0.0),
+            sender_id: row.get(6)?,
+            receiver_id: row.get(7)?,
+            timestamp: row.get(8)?,
+        })
+    })?;
+
+    if let Some(transfer) = transfer_iter.next() {
+        Ok(Some(transfer?))
+    } else {
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "desktop")]
+pub fn save_settings(settings: &Settings) -> Result<()> {
+    let conn = get_connection()?;
+    
+    // Update each setting
+    let settings_data = vec![
+        ("username", settings.username.clone()),
+        ("app_mode", settings.app_mode.clone()),
+        ("notifications", settings.notifications.to_string()),
+        ("download_path", settings.download_path.clone()),
+        ("auto_accept_files", settings.auto_accept_files.to_string()),
+        ("max_file_size", 
+            settings.max_file_size.map(|s| s.to_string()).unwrap_or_else(|| "null".to_string())
+        ),
+    ];
+    
+    for (key, value) in settings_data {
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            [key, &value],
+        )?;
+    }
+    
+    Ok(())
+}
+
+// Web/Mobile implementations using browser storage
+#[cfg(not(feature = "desktop"))]
+mod web_storage {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    
+    // In-memory storage for web version (could be enhanced with localStorage)
+    static PEERS: Mutex<Option<Vec<Peer>>> = Mutex::new(None);
+    static MESSAGES: Mutex<Option<Vec<Message>>> = Mutex::new(None);
+    static SETTINGS: Mutex<Option<Settings>> = Mutex::new(None);
+    static FILE_TRANSFERS: Mutex<Option<Vec<FileTransfer>>> = Mutex::new(None);
+    
+    fn init_storage() {
+        let mut peers = PEERS.lock().unwrap();
+        if peers.is_none() {
+            *peers = Some(Vec::new());
+        }
+        
+        let mut messages = MESSAGES.lock().unwrap();
+        if messages.is_none() {
+            *messages = Some(Vec::new());
+        }
+        
+        let mut settings = SETTINGS.lock().unwrap();
+        if settings.is_none() {
+            *settings = Some(Settings {
+                username: "WebUser".to_string(),
+                app_mode: "system".to_string(),
+                notifications: true,
+                download_path: "./downloads".to_string(),
+                auto_accept_files: false,
+                max_file_size: None,
+            });
+        }
+        
+        let mut transfers = FILE_TRANSFERS.lock().unwrap();
+        if transfers.is_none() {
+            *transfers = Some(Vec::new());
+        }
+    }
+    
+    pub fn get_peers() -> Result<Vec<Peer>> {
+        init_storage();
+        let peers = PEERS.lock().map_err(|e| e.to_string())?;
+        Ok(peers.as_ref().unwrap().clone())
+    }
+    
+    pub fn get_messages_for_peer(peer_id: &str) -> Result<Vec<Message>> {
+        init_storage();
+        let messages = MESSAGES.lock().map_err(|e| e.to_string())?;
+        let filtered: Vec<Message> = messages.as_ref().unwrap()
+            .iter()
+            .filter(|m| m.sender_id == peer_id || m.receiver_id == peer_id)
+            .cloned()
+            .collect();
+        Ok(filtered)
+    }
+    
+    pub fn insert_message(message: &Message) -> Result<i64> {
+        init_storage();
+        let mut messages = MESSAGES.lock().map_err(|e| e.to_string())?;
+        let mut new_message = message.clone();
+        new_message.id = Some(messages.as_ref().unwrap().len() as i64 + 1);
+        messages.as_mut().unwrap().push(new_message);
+        Ok(messages.as_ref().unwrap().len() as i64)
+    }
+    
+    pub fn get_settings() -> Result<Settings> {
+        init_storage();
+        let settings = SETTINGS.lock().map_err(|e| e.to_string())?;
+        Ok(settings.as_ref().unwrap().clone())
+    }
+    
+    pub fn save_settings(new_settings: &Settings) -> Result<()> {
+        init_storage();
+        let mut settings = SETTINGS.lock().map_err(|e| e.to_string())?;
+        *settings.as_mut().unwrap() = new_settings.clone();
+        Ok(())
+    }
+    
+    pub fn insert_file_transfer(transfer: &FileTransfer) -> Result<i64> {
+        init_storage();
+        let mut transfers = FILE_TRANSFERS.lock().map_err(|e| e.to_string())?;
+        let mut new_transfer = transfer.clone();
+        new_transfer.id = Some(transfers.as_ref().unwrap().len() as i64 + 1);
+        transfers.as_mut().unwrap().push(new_transfer);
+        Ok(transfers.as_ref().unwrap().len() as i64)
+    }
+    
+    pub fn get_file_transfers() -> Result<Vec<FileTransfer>> {
+        init_storage();
+        let transfers = FILE_TRANSFERS.lock().map_err(|e| e.to_string())?;
+        Ok(transfers.as_ref().unwrap().clone())
+    }
+    
+    pub fn get_last_message_for_peer(peer_id: &str) -> Result<Option<Message>> {
+        let messages = get_messages_for_peer(peer_id)?;
+        Ok(messages.last().cloned())
+    }
+    
+    pub fn update_file_transfer_status(_id: i64, _status: &str, _progress: f64) -> Result<()> {
+        // TODO: Implement file transfer status updates
+        Ok(())
+    }
+    
+    pub fn get_file_transfer_by_id(_transfer_id: &str) -> Result<Option<FileTransfer>> {
+        // TODO: Implement file transfer lookup
+        Ok(None)
+    }
+}
+
+// Export web functions when not on desktop
+#[cfg(not(feature = "desktop"))]
+pub use web_storage::*;

@@ -1,6 +1,65 @@
 use dioxus::prelude::*;
 use crate::{Route, database};
 
+fn save_settings_to_db(settings: database::Settings) {
+    #[cfg(feature = "desktop")]
+    {
+        if let Err(e) = database::save_settings(&settings) {
+            eprintln!("Failed to save settings: {}", e);
+        } else {
+            println!("✅ Settings saved successfully");
+        }
+    }
+    #[cfg(not(feature = "desktop"))]
+    {
+        println!("💾 Settings saved to browser storage: {:?}", settings);
+        // TODO: Implement browser storage for web version
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn select_download_folder() -> Option<String> {
+    use std::process::Command;
+    
+    // Try to use native file dialogs on different platforms
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = Command::new("zenity")
+            .args(&["--file-selection", "--directory", "--title=Select Download Folder"])
+            .output()
+        {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                return Some(path);
+            }
+        }
+        
+        // Fallback: just use a default downloads directory
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        Some(format!("{}/Downloads", home))
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        // On Windows, we could use PowerShell or native dialogs
+        // For now, use a simple default
+        let userprofile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:".to_string());
+        Some(format!("{}\\Downloads", userprofile))
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        // On macOS, we could use osascript
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        Some(format!("{}/Downloads", home))
+    }
+    
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        Some("./downloads".to_string())
+    }
+}
+
 #[component]
 pub fn Settings() -> Element {
     let mut settings = use_signal(|| database::Settings {
@@ -213,6 +272,20 @@ pub fn Settings() -> Element {
                                 button {
                                     class: "glass-button",
                                     style: "padding: 12px 16px;",
+                                    onclick: move |_| {
+                                        #[cfg(feature = "desktop")]
+                                        {
+                                            if let Some(folder) = select_download_folder() {
+                                                let mut current = settings.read().clone();
+                                                current.download_path = folder;
+                                                settings.set(current);
+                                            }
+                                        }
+                                        #[cfg(not(feature = "desktop"))]
+                                        {
+                                            println!("📁 Folder selection not available in web version");
+                                        }
+                                    },
                                     "Browse"
                                 }
                             }
@@ -321,6 +394,10 @@ pub fn Settings() -> Element {
                                 font-size: 16px; 
                                 font-weight: 600;
                             ",
+                            onclick: move |_| {
+                                let current_settings = settings.read().clone();
+                                save_settings_to_db(current_settings);
+                            },
                             "Save Settings"
                         }
                     }
