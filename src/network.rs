@@ -158,6 +158,28 @@ impl NetworkManager {
     pub async fn start(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("🌐 Starting mDNS-based network services...");
         
+        // Add manual test peers for testing chat functionality
+        let other_port = if self.port == 8081 { 8082 } else { 8081 };
+        let test_peer = database::Peer {
+            id: format!("test-peer-{}", other_port),
+            name: format!("Test Peer (port {})", other_port),
+            avatar: None,
+            last_seen: chrono::Utc::now().to_rfc3339(),
+            is_online: true,
+            ip_address: "127.0.0.1".to_string(),
+        };
+        
+        // Add to peer cache
+        crate::peer_cache::add_peer(test_peer.clone());
+        
+        // Add to network manager's peers
+        {
+            let mut peers = self.peers.lock().await;
+            peers.insert(test_peer.id.clone(), test_peer.clone());
+        }
+        
+        println!("🧪 Added test peer for localhost testing: {} -> 127.0.0.1:{}", test_peer.name, other_port);
+        
         // Start WebSocket server for incoming connections
         let server_manager = self.clone();
         tokio::spawn(async move {
@@ -201,7 +223,7 @@ impl NetworkManager {
     async fn start_udp_listener(&self) -> Result<(), Box<dyn std::error::Error>> {
         use tokio::net::UdpSocket;
         
-        let socket = UdpSocket::bind("0.0.0.0:8082").await?;
+        let socket = UdpSocket::bind("0.0.0.0:8083").await?;
         if let Ok(local_addr) = socket.local_addr() {
             println!("🔍 UDP listener bound to: {}", local_addr);
         } else {
@@ -303,8 +325,12 @@ impl NetworkManager {
     async fn start_udp_broadcaster(&self) {
         use tokio::net::UdpSocket;
         
+        println!("📡 UDP broadcaster task started, waiting 2 seconds...");
+        
         // Wait a bit before starting broadcasts
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        
+        println!("📡 UDP broadcaster starting socket binding...");
         
         let socket = match UdpSocket::bind("0.0.0.0:0").await {
             Ok(s) => {
@@ -316,18 +342,24 @@ impl NetworkManager {
                 s
             },
             Err(e) => {
-                eprintln!("❌ Failed to bind UDP broadcaster: {}", e);
+                eprintln!("📡 ❌ Failed to bind UDP broadcaster: {}", e);
                 return;
             }
         };
         
-        if let Err(e) = socket.set_broadcast(true) {
-            eprintln!("❌ Failed to set broadcast: {}", e);
-            return;
+        match socket.set_broadcast(true) {
+            Ok(_) => {
+                println!("📡 ✅ Broadcast mode enabled");
+            }
+            Err(e) => {
+                eprintln!("📡 ❌ Failed to set broadcast: {}", e);
+                return;
+            }
         }
         
-        println!("📡 UDP broadcaster started successfully");
+        println!("📡 ✅ UDP broadcaster started successfully");
         println!("📡 Will broadcast as: {} ({}) at {}", self.username, self.peer_id, self.local_ip);
+        println!("📡 Starting broadcast loop...");
         
         loop {
             let discovery_message = Message::PeerDiscovery {
@@ -340,9 +372,9 @@ impl NetworkManager {
             match serde_json::to_vec(&discovery_message) {
                 Ok(data) => {
                     // Broadcast to local network
-                    match socket.send_to(&data, "255.255.255.255:8082").await {
+                    match socket.send_to(&data, "255.255.255.255:8083").await {
                         Ok(bytes_sent) => {
-                            println!("📡 ✅ Broadcast sent: {} bytes to 255.255.255.255:8082", bytes_sent);
+                            println!("📡 ✅ Broadcast sent: {} bytes to 255.255.255.255:8083", bytes_sent);
                             println!("📡    Message: {} at {} (peer_id: {})", self.username, self.local_ip, self.peer_id);
                         },
                         Err(e) => {
@@ -558,8 +590,18 @@ impl NetworkManager {
         println!("💬 Looking for peer {} in {} discovered peers", receiver_id, peers.len());
         
         if let Some(peer) = peers.get(receiver_id) {
-            println!("💬 Found peer: {} at {}:{}", peer.name, peer.ip_address, self.port);
-            match self.connect_to_peer(&peer.ip_address, self.port).await {
+            // Determine the correct port for the peer
+            let peer_port = if peer.id.starts_with("test-peer-") {
+                // Extract port from test peer ID
+                peer.id.strip_prefix("test-peer-")
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(self.port)
+            } else {
+                self.port
+            };
+            
+            println!("💬 Found peer: {} at {}:{}", peer.name, peer.ip_address, peer_port);
+            match self.connect_to_peer(&peer.ip_address, peer_port).await {
                 Ok(mut stream) => {
                     let message_text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
                     match stream.send(tokio_tungstenite::tungstenite::Message::Text(message_text)).await {
@@ -679,7 +721,10 @@ pub async fn start_network() {
     #[cfg(feature = "desktop")]
     {
         let username = get_username_from_settings();
-        let port = 8081;
+        let port = std::env::var("CHAT_PORT")
+            .unwrap_or_else(|_| "8081".to_string())
+            .parse::<u16>()
+            .unwrap_or(8081);
         
         let mut manager = NetworkManager::new(username, port);
         

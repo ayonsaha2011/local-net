@@ -35,10 +35,17 @@ fn main() {
     #[cfg(feature = "desktop")]
     {
         std::thread::spawn(|| {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+                
             rt.block_on(async {
+                println!("🚀 Starting network services in background thread...");
                 network::start_network().await;
+                
                 // Keep the runtime alive
+                println!("🚀 Network services started, keeping runtime alive...");
                 loop {
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
@@ -46,7 +53,7 @@ fn main() {
         });
         
         // Give network time to start
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(500));
     }
 
     dioxus::launch(App);
